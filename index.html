@@ -527,6 +527,15 @@
                 const itemCount = this.items.length;
                 const checkedCount = this.items.filter(i => i.completed).length;
                 
+                // Update Schema.org metadata
+                const schemaCount = document.getElementById('schemaItemCount');
+                if (schemaCount) {
+                    schemaCount.content = itemCount.toString();
+                }
+                
+                // Update dynamic Schema.org JSON-LD for the list items
+                this.updateSchemaData();
+                
                 if (itemCount > 0) {
                     this.itemCount.style.display = 'block';
                     this.itemCountText.textContent = 
@@ -540,12 +549,17 @@
                     return;
                 }
                 
-                this.groceryList.innerHTML = this.items.map(item => `
+                this.groceryList.innerHTML = this.items.map((item, index) => `
                     <li class="grocery-item ${item.completed ? 'completed' : ''}" 
                         data-id="${item.id}"
-                        onclick="app.toggleItem(${item.id})">
+                        onclick="app.toggleItem(${item.id})"
+                        itemscope 
+                        itemtype="https://schema.org/ListItem"
+                        itemprop="itemListElement">
+                        <meta itemprop="position" content="${index + 1}">
                         <div class="item-content">
-                            <span class="item-text">${this.escapeHtml(item.text)}</span>
+                            <span class="item-text" itemprop="name">${this.escapeHtml(item.text)}</span>
+                            <meta itemprop="description" content="${item.completed ? 'Purchased' : 'To buy'}">
                             <div class="item-actions">
                                 <div class="check-icon">
                                     ${item.completed ? '✓' : ''}
@@ -555,6 +569,36 @@
                         </div>
                     </li>
                 `).join('');
+            }
+            
+            updateSchemaData() {
+                // Remove existing dynamic schema if it exists
+                const existingSchema = document.getElementById('dynamicListSchema');
+                if (existingSchema) {
+                    existingSchema.remove();
+                }
+                
+                // Create new schema for current list state
+                const schemaData = {
+                    "@context": "https://schema.org",
+                    "@type": "ItemList",
+                    "name": "Current Grocery Shopping List",
+                    "description": `Shopping list with ${this.items.length} items`,
+                    "numberOfItems": this.items.length,
+                    "itemListElement": this.items.map((item, index) => ({
+                        "@type": "ListItem",
+                        "position": index + 1,
+                        "name": item.text,
+                        "description": item.completed ? "Purchased" : "To buy",
+                        "identifier": item.id.toString()
+                    }))
+                };
+                
+                const script = document.createElement('script');
+                script.type = 'application/ld+json';
+                script.id = 'dynamicListSchema';
+                script.textContent = JSON.stringify(schemaData, null, 2);
+                document.head.appendChild(script);
             }
             
             showStatus(message) {
@@ -713,4 +757,3 @@
     </script>
 </body>
 </html>
-
