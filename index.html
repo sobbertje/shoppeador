@@ -299,6 +299,19 @@
             50% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
         }
         
+        .item-count {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 124, 255, 0.2);
+            border: 1px solid rgba(0, 124, 255, 0.3);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #00d4ff;
+            backdrop-filter: blur(10px);
+        }
+        
         /* iOS specific styles */
         @supports (-webkit-touch-callout: none) {
             .container {
@@ -329,7 +342,7 @@
             </div>
             
             <div class="controls">
-                <button class="btn btn-clear" id="clearCheckedBtn">Clear Checked</button>
+                <button class="btn btn-clear-checked" id="clearCheckedBtn">Clear Checked</button>
                 <button class="btn btn-clear" id="clearBtn">Clear All</button>
             </div>
         </div>
@@ -340,16 +353,23 @@
                 <p class="empty-text">Your grocery list is empty<br>Add some items to get started!</p>
             </div>
         </ul>
+        
+        <div class="item-count" id="itemCount" style="display: none;">
+            <span id="itemCountText">0 items</span>
+        </div>
     </div>
 
     <script>
         class GroceryList {
             constructor() {
-                this.items = this.loadItems();
+                this.maxItems = 50; // Limit to prevent URL from getting too long
+                this.items = [];
                 this.recognition = null;
+                this.saveDebounceTimer = null;
                 this.initElements();
                 this.initEventListeners();
                 this.initVoiceRecognition();
+                this.loadItems(); // Load after init
                 this.render();
             }
             
@@ -361,6 +381,8 @@
                 this.clearCheckedBtn = document.getElementById('clearCheckedBtn');
                 this.groceryList = document.getElementById('groceryList');
                 this.emptyState = document.getElementById('emptyState');
+                this.itemCount = document.getElementById('itemCount');
+                this.itemCountText = document.getElementById('itemCountText');
             }
             
             initEventListeners() {
@@ -381,6 +403,11 @@
                     }
                     lastTouchEnd = now;
                 }, false);
+                
+                // Listen for hash changes (in case user navigates back)
+                window.addEventListener('hashchange', () => {
+                    this.loadFromHash();
+                });
             }
             
             initVoiceRecognition() {
@@ -428,6 +455,12 @@
             addItem() {
                 const itemText = this.itemInput.value.trim();
                 if (!itemText) return;
+                
+                // Check if we've hit the limit
+                if (this.items.length >= this.maxItems) {
+                    this.showStatus(`List full! Max ${this.maxItems} items`);
+                    return;
+                }
                 
                 const newItem = {
                     id: Date.now(),
@@ -490,6 +523,18 @@
             }
             
             render() {
+                // Update item count
+                const itemCount = this.items.length;
+                const checkedCount = this.items.filter(i => i.completed).length;
+                
+                if (itemCount > 0) {
+                    this.itemCount.style.display = 'block';
+                    this.itemCountText.textContent = 
+                        `${itemCount} item${itemCount === 1 ? '' : 's'}${checkedCount > 0 ? ` (${checkedCount} done)` : ''}`;
+                } else {
+                    this.itemCount.style.display = 'none';
+                }
+                
                 if (this.items.length === 0) {
                     this.groceryList.innerHTML = '<div class="empty-state"><div class="empty-icon">📝</div><p class="empty-text">Your grocery list is empty<br>Add some items to get started!</p></div>';
                     return;
@@ -526,27 +571,140 @@
                 return div.innerHTML;
             }
             
+            // HYBRID STORAGE IMPLEMENTATION
             saveItems() {
+                // Debounce saves to prevent excessive updates
+                clearTimeout(this.saveDebounceTimer);
+                this.saveDebounceTimer = setTimeout(() => {
+                    this.performSave();
+                }, 100);
+            }
+            
+            performSave() {
+                const data = JSON.stringify(this.items);
+                
+                // 1. Try localStorage first (most reliable when available)
                 try {
-                    const data = JSON.stringify(this.items);
-                    window.groceryListData = data;
+                    localStorage.setItem('groceryItems', data);
+                    localStorage.setItem('lastSaved', new Date().toISOString());
+                    console.log('Saved to localStorage');
                 } catch (e) {
-                    console.warn('Could not save items');
+                    console.warn('localStorage save failed:', e);
+                }
+                
+                // 2. Always save to URL hash as backup (survives iOS purges)
+                try {
+                    // Compress the data to save space
+                    const compressed = this.compressData(this.items);
+                    // Use replaceState to avoid creating history entries
+                    const newHash = '#' + compressed;
+                    if (window.location.hash !== newHash) {
+                        history.replaceState(null, null, newHash);
+                    }
+                    console.log('Saved to URL hash');
+                } catch (e) {
+                    console.warn('URL hash save failed:', e);
                 }
             }
             
             loadItems() {
+                let loaded = false;
+                
+                // 1. First try to load from URL hash (most persistent)
+                if (window.location.hash && window.location.hash.length > 1) {
+                    try {
+                        const decompressed = this.decompressData(window.location.hash.substring(1));
+                        if (decompressed && decompressed.length > 0) {
+                            this.items = decompressed;
+                            loaded = true;
+                            console.log('Loaded from URL hash');
+                        }
+                    } catch (e) {
+                        console.warn('URL hash load failed:', e);
+                    }
+                }
+                
+                // 2. If no hash data, try localStorage
+                if (!loaded) {
+                    try {
+                        const saved = localStorage.getItem('groceryItems');
+                        if (saved) {
+                            const parsedItems = JSON.parse(saved);
+                            if (parsedItems && parsedItems.length > 0) {
+                                this.items = parsedItems;
+                                loaded = true;
+                                console.log('Loaded from localStorage');
+                                // Update the hash with the localStorage data
+                                this.performSave();
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('localStorage load failed:', e);
+                    }
+                }
+                
+                // 3. If nothing loaded, start with empty array
+                if (!loaded) {
+                    this.items = [];
+                    console.log('Starting with empty list');
+                }
+            }
+            
+            loadFromHash() {
+                // Called when hash changes
+                if (window.location.hash && window.location.hash.length > 1) {
+                    try {
+                        const decompressed = this.decompressData(window.location.hash.substring(1));
+                        if (decompressed) {
+                            this.items = decompressed;
+                            this.render();
+                        }
+                    } catch (e) {
+                        console.warn('Hash change load failed:', e);
+                    }
+                }
+            }
+            
+            // Compression helpers to minimize URL length
+            compressData(items) {
+                // Simplify the data structure before encoding
+                const simplified = items.map(item => ({
+                    i: item.id,
+                    t: item.text,
+                    c: item.completed ? 1 : 0
+                }));
+                // Convert to JSON and base64 encode
+                return btoa(encodeURIComponent(JSON.stringify(simplified)));
+            }
+            
+            decompressData(compressed) {
                 try {
-                    const data = window.groceryListData;
-                    return data ? JSON.parse(data) : [];
+                    // Decode from base64 and parse JSON
+                    const json = decodeURIComponent(atob(compressed));
+                    const simplified = JSON.parse(json);
+                    // Restore full structure
+                    return simplified.map(item => ({
+                        id: item.i,
+                        text: item.t,
+                        completed: item.c === 1,
+                        createdAt: item.d || new Date().toISOString()
+                    }));
                 } catch (e) {
-                    return [];
+                    console.error('Decompression failed:', e);
+                    return null;
                 }
             }
         }
         
         // Initialize app
         const app = new GroceryList();
+        
+        // Log storage status on load
+        console.log('Storage check:', {
+            hasLocalStorage: typeof localStorage !== 'undefined',
+            hasHashData: window.location.hash.length > 1,
+            itemCount: app.items.length
+        });
         
         // Register service worker for PWA functionality
         if ('serviceWorker' in navigator) {
